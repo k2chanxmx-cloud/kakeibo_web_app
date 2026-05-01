@@ -36,11 +36,6 @@ CATEGORIES = [
     "その他",
 ]
 
-AUTO_FIXED_EXPENSES = {
-    "旦那に渡す": 80000,
-    "携帯代": 9000,
-}
-
 BUDGETS = {
     "コンカフェ": 50000,
     "同伴": 10000,
@@ -154,46 +149,6 @@ def get_income(ym):
     return 0
 
 
-def auto_insert_fixed_expenses():
-    ym = this_month()
-    first_day = f"{ym}-01"
-
-    conn = get_conn()
-    cur = conn.cursor()
-
-    for category, amount in AUTO_FIXED_EXPENSES.items():
-        memo = f"自動反映:{ym}:{category}"
-
-        cur.execute("""
-            SELECT id FROM expenses
-            WHERE memo = %s
-            LIMIT 1
-        """, (memo,))
-
-        if not cur.fetchone():
-            cur.execute("""
-                INSERT INTO expenses (
-                    expense_date,
-                    category,
-                    amount,
-                    memo,
-                    owner,
-                    source_event_id
-                )
-                VALUES (%s, %s, %s, %s, %s, NULL)
-            """, (
-                first_day,
-                category,
-                amount,
-                memo,
-                "まき",
-            ))
-
-    conn.commit()
-    cur.close()
-    conn.close()
-
-
 def login_required():
     return session.get("logged_in") is True
 
@@ -207,7 +162,6 @@ def before_request():
         return redirect(url_for("login"))
 
     init_db()
-    auto_insert_fixed_expenses()
 
 
 @app.route("/manifest.json")
@@ -405,6 +359,7 @@ def input_expense():
         cur.close()
         conn.close()
 
+        flash("支出を追加しました")
         return redirect(url_for("home"))
 
     return render_template(
@@ -507,6 +462,8 @@ def confirm_candidate(candidate_id):
 
     if not c:
         flash("対象が見つかりません")
+        cur.close()
+        conn.close()
         return redirect(url_for("candidates"))
 
     cur.execute("""
@@ -542,6 +499,7 @@ def confirm_candidate(candidate_id):
     cur.close()
     conn.close()
 
+    flash("家計簿に反映しました")
     return redirect(url_for("home"))
 
 
@@ -559,6 +517,7 @@ def delete_candidate(candidate_id):
     cur.close()
     conn.close()
 
+    flash("予定候補を削除しました")
     return redirect(url_for("candidates"))
 
 

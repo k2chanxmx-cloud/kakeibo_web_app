@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<section class="big-card">
+  <div class="section-head">
+    <h1>予定から入力</h1>
+  </div>
+
+  <form method="post" action="{{ url_for('import_candidates') }}">
+    <button class="primary-btn">カレンダー予定を取り込む</button>
+  </form>
+
+  <p class="mini">
+    担当者が「まき」「二人」の予定だけ取り込みます。
+  </p>
+</section>
+
+{% if rows %}
+  {% for r in rows %}
+    <section class="event-card">
+      <div class="event-date">{{ r.event_date.strftime("%Y/%m/%d") }}</div>
+      <h2>{{ r.title }}</h2>
+
+      <div class="chips">
+        <span class="chip">{{ r.owner }}</span>
+        <span class="chip">{{ r.category }}</span>
+      </div>
+
+      <form method="post" action="{{ url_for('confirm_candidate', candidate_id=r.id) }}" class="amount-form">
+        <label>確定金額</label>
+        <input class="input" type="number" name="amount" placeholder="例：6000" required>
+        <button class="primary-btn">家計簿に反映</button>
+      </form>
+
+      <form method="post" action="{{ url_for('delete_candidate', candidate_id=r.id) }}">
+        <button class="delete-btn">この予定を削除</button>
+      </form>
+    </section>
+  {% endfor %}
+{% else %}
+  <section class="card">
+    <p class="empty">未確定の予定はありません</p>
+  </section>
+{% endif %}
+
+{% endblock %}

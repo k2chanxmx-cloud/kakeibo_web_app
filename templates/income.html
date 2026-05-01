@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<section class="big-card">
+  <h1>収入設定</h1>
+  <p class="mini">{{ ym }} の収入を登録します。</p>
+
+  <form method="post" class="form">
+    <label>今月の収入</label>
+    <input
+      class="input"
+      type="number"
+      name="amount"
+      value="{% if income %}{{ income }}{% endif %}"
+      placeholder="例：160000"
+      required
+    >
+
+    <button class="primary-btn">保存する</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>現在の設定</h2>
+
+  {% if income %}
+    <p class="big-number">{{ income|yen }}</p>
+  {% else %}
+    <p class="empty">まだ収入が設定されていません</p>
+  {% endif %}
+</section>
+
+{% endblock %}

@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<section class="big-card">
+  <p class="label">今月の残り自由費</p>
+  <h1 class="{% if remain < 0 %}danger-text{% else %}ok-text{% endif %}">
+    {{ remain|yen }}
+  </h1>
+
+  {% if remain < 0 %}
+    <p class="mini danger-text">今月、予算オーバー中</p>
+  {% else %}
+    <p class="mini">まだ大丈夫。残り自由費を守れば勝ち。</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <div class="section-head">
+    <h2>今月の支出内訳</h2>
+    <span>{{ total|yen }}</span>
+  </div>
+
+  {% if chart_values %}
+    <canvas id="pieChart"></canvas>
+  {% else %}
+    <p class="empty">まだ支出がありません</p>
+  {% endif %}
+</section>
+
+<section class="summary-grid">
+  <div class="mini-card">
+    <p>支出合計</p>
+    <strong>{{ total|yen }}</strong>
+  </div>
+  <div class="mini-card">
+    <p>遊び費</p>
+    <strong>{{ play_total|yen }}</strong>
+  </div>
+</section>
+
+<section class="card">
+  <h2>使いすぎチェック</h2>
+
+  {% if overuse %}
+    {% for item in overuse %}
+      <div class="budget-row">
+        <div class="budget-title">
+          <span>{{ item.category }}</span>
+          <span>{{ item.spent|yen }} / {{ item.budget|yen }}</span>
+        </div>
+        <div class="bar-bg">
+          <div class="bar-fill {% if item.danger %}danger{% endif %}" style="width: {{ item.rate }}%;"></div>
+        </div>
+      </div>
+    {% endfor %}
+  {% else %}
+    <p class="empty">今月はまだ危険ラインなし。えらい。</p>
+  {% endif %}
+</section>
+
+<script>
+const labels = {{ chart_labels|tojson }};
+const values = {{ chart_values|tojson }};
+
+if (values.length > 0) {
+  new Chart(document.getElementById("pieChart"), {
+    type: "doughnut",
+    data: {
+      labels: labels,
+      datasets: [{
+        data: values
+      }]
+    },
+    options: {
+      plugins: {
+        legend: {
+          position: "bottom"
+        },
+        tooltip: {
+          callbacks: {
+            label: function(context) {
+              const value = context.raw;
+              return `${context.label}: ¥${value.toLocaleString()}`;
+            }
+          }
+        }
+      }
+    }
+  });
+}
+</script>
+
+{% endblock %}

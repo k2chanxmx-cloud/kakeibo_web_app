@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<section class="big-card">
+  <h1>支出追加</h1>
+
+  <form method="post" class="form">
+
+    <label>日付</label>
+    <input class="input" type="date" name="expense_date" value="{{ today }}" required>
+
+    <label>誰の支出？</label>
+    <div class="owner-buttons">
+      <label>
+        <input type="radio" name="owner" value="まき" checked>
+        <span class="owner-btn maki">まき</span>
+      </label>
+      <label>
+        <input type="radio" name="owner" value="二人">
+        <span class="owner-btn futari">二人</span>
+      </label>
+    </div>
+
+    <label>カテゴリ</label>
+    <select class="input" name="category">
+      {% for c in categories %}
+        <option value="{{ c }}">{{ c }}</option>
+      {% endfor %}
+    </select>
+
+    <label>金額</label>
+    <input class="input" type="number" name="amount" placeholder="例：6000" required>
+
+    <label>メモ</label>
+    <input class="input" type="text" name="memo" placeholder="例：シャンパン、写メなど">
+
+    <button class="primary-btn">追加する</button>
+
+  </form>
+</section>
+
+{% endblock %}

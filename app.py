@@ -524,7 +524,6 @@ def delete_candidate(candidate_id):
 @app.route("/compare")
 def compare():
     selected_category = request.args.get("category", "コンカフェ")
-    mode = request.args.get("mode", "category")
 
     months = []
     now = datetime.now()
@@ -542,25 +541,25 @@ def compare():
     conn = get_conn()
     cur = conn.cursor()
 
-    values = []
-
+    category_values = []
     for ym in months:
-        if mode == "play":
-            cur.execute("""
-                SELECT COALESCE(SUM(amount), 0)
-                FROM expenses
-                WHERE TO_CHAR(expense_date, 'YYYY-MM') = %s
-                  AND category IN ('コンカフェ', '同伴', '交際費')
-            """, (ym,))
-        else:
-            cur.execute("""
-                SELECT COALESCE(SUM(amount), 0)
-                FROM expenses
-                WHERE TO_CHAR(expense_date, 'YYYY-MM') = %s
-                  AND category = %s
-            """, (ym, selected_category))
+        cur.execute("""
+            SELECT COALESCE(SUM(amount), 0)
+            FROM expenses
+            WHERE TO_CHAR(expense_date, 'YYYY-MM') = %s
+              AND category = %s
+        """, (ym, selected_category))
+        category_values.append(cur.fetchone()[0] or 0)
 
-        values.append(cur.fetchone()[0] or 0)
+    play_values = []
+    for ym in months:
+        cur.execute("""
+            SELECT COALESCE(SUM(amount), 0)
+            FROM expenses
+            WHERE TO_CHAR(expense_date, 'YYYY-MM') = %s
+              AND category IN ('コンカフェ', '同伴', '交際費')
+        """, (ym,))
+        play_values.append(cur.fetchone()[0] or 0)
 
     cur.close()
     conn.close()
@@ -570,9 +569,9 @@ def compare():
         active="compare",
         categories=CATEGORIES,
         selected_category=selected_category,
-        mode=mode,
         labels=[m[5:] + "月" for m in months],
-        values=[int(v) for v in values],
+        category_values=[int(v) for v in category_values],
+        play_values=[int(v) for v in play_values],
     )
 
 

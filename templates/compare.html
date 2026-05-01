@@ -6,17 +6,12 @@
   <h1>月別比較</h1>
 
   <form method="get" class="form">
-
-    <label>表示モード</label>
-    <select class="input" name="mode">
-      <option value="category" {% if mode == "category" %}selected{% endif %}>カテゴリ別</option>
-      <option value="play" {% if mode == "play" %}selected{% endif %}>遊び費グループ</option>
-    </select>
-
     <label>カテゴリ</label>
     <select class="input" name="category">
       {% for c in categories %}
-        <option value="{{ c }}" {% if c == selected_category %}selected{% endif %}>{{ c }}</option>
+        <option value="{{ c }}" {% if c == selected_category %}selected{% endif %}>
+          {{ c }}
+        </option>
       {% endfor %}
     </select>
 
@@ -25,49 +20,74 @@
 </section>
 
 <section class="card">
-  <h2>
-    {% if mode == "play" %}
-      遊び費グループ推移
-    {% else %}
-      {{ selected_category }} 推移
-    {% endif %}
-  </h2>
+  <h2>{{ selected_category }} の推移</h2>
+  <canvas id="categoryChart"></canvas>
+</section>
 
-  <canvas id="barChart"></canvas>
+<section class="card">
+  <h2>遊び費の推移</h2>
+  <p class="mini">コンカフェ＋同伴＋交際費</p>
+  <canvas id="playChart"></canvas>
 </section>
 
 <script>
 const labels = {{ labels|tojson }};
-const values = {{ values|tojson }};
+const categoryValues = {{ category_values|tojson }};
+const playValues = {{ play_values|tojson }};
 
-new Chart(document.getElementById("barChart"), {
+const yen = value => "¥" + value.toLocaleString();
+
+new Chart(document.getElementById("categoryChart"), {
   type: "bar",
   data: {
     labels: labels,
     datasets: [{
-      label: "支出額",
-      data: values
+      label: "{{ selected_category }}",
+      data: categoryValues
     }]
   },
   options: {
     plugins: {
-      legend: {
-        display: false
-      },
+      legend: { display: false },
       tooltip: {
         callbacks: {
-          label: function(context) {
-            return `¥${context.raw.toLocaleString()}`;
-          }
+          label: context => yen(context.raw)
         }
       }
     },
     scales: {
       y: {
         ticks: {
-          callback: function(value) {
-            return "¥" + value.toLocaleString();
-          }
+          callback: value => yen(value)
+        }
+      }
+    }
+  }
+});
+
+new Chart(document.getElementById("playChart"), {
+  type: "line",
+  data: {
+    labels: labels,
+    datasets: [{
+      label: "遊び費",
+      data: playValues,
+      tension: 0.35
+    }]
+  },
+  options: {
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        callbacks: {
+          label: context => yen(context.raw)
+        }
+      }
+    },
+    scales: {
+      y: {
+        ticks: {
+          callback: value => yen(value)
         }
       }
     }

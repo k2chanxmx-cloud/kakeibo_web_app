@@ -11,7 +11,11 @@
   {% for r in rows %}
     <section class="history-swipe-wrap">
 
-      <form method="post" action="{{ url_for('delete_expense', expense_id=r.id) }}" class="swipe-delete-form">
+      <form
+        method="post"
+        action="{{ url_for('delete_expense', expense_id=r.id) }}"
+        class="swipe-delete-form delete-form"
+      >
         <button type="submit" class="swipe-delete-btn">削除</button>
       </form>
 
@@ -27,7 +31,11 @@
           </p>
         </div>
 
-        <form method="post" action="{{ url_for('delete_expense', expense_id=r.id) }}" class="normal-delete-form">
+        <form
+          method="post"
+          action="{{ url_for('delete_expense', expense_id=r.id) }}"
+          class="normal-delete-form delete-form"
+        >
           <button type="submit" class="small-delete">削除</button>
         </form>
       </div>
@@ -51,6 +59,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     card.addEventListener("touchstart", e => {
       startX = e.touches[0].clientX;
+      currentX = startX;
       isDragging = true;
       card.style.transition = "none";
     });
@@ -81,9 +90,7 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
-  const deleteForms = document.querySelectorAll(".normal-delete-form, .swipe-delete-form");
-
-  deleteForms.forEach(form => {
+  document.querySelectorAll(".delete-form").forEach(form => {
     form.addEventListener("submit", e => {
       const ok = confirm("この支出を削除しますか？");
       if (!ok) {

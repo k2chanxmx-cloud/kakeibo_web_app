@@ -650,11 +650,17 @@ def delete_expense(expense_id):
         WHERE id = %s
     """, (expense_id,))
 
+    deleted_count = cur.rowcount
+
     conn.commit()
     cur.close()
     conn.close()
 
-    flash("削除しました")
+    if deleted_count > 0:
+        flash("削除しました")
+    else:
+        flash("削除対象が見つかりませんでした")
+
     return redirect(url_for("history"))
 
 

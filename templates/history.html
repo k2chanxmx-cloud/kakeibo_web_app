@@ -4,17 +4,17 @@
 
 <section class="big-card">
   <h1>支出履歴</h1>
-  <p class="mini">確定済みの支出一覧</p>
+  <p class="mini">登録済みの支出一覧</p>
 </section>
 
 {% if rows %}
   {% for r in rows %}
-    <section class="history-swipe-wrap">
-
+    <section class="swipe-row">
       <form
         method="post"
         action="{{ url_for('delete_expense', expense_id=r.id) }}"
-        class="swipe-delete-form delete-form"
+        class="swipe-delete-form"
+        onsubmit="return confirm('この支出を削除しますか？');"
       >
         <button type="submit" class="swipe-delete-btn">削除</button>
       </form>
@@ -30,16 +30,7 @@
             {% endif %}
           </p>
         </div>
-
-        <form
-          method="post"
-          action="{{ url_for('delete_expense', expense_id=r.id) }}"
-          class="normal-delete-form delete-form"
-        >
-          <button type="submit" class="small-delete">削除</button>
-        </form>
       </div>
-
     </section>
   {% endfor %}
 {% else %}
@@ -50,51 +41,53 @@
 
 <script>
 document.addEventListener("DOMContentLoaded", () => {
-  const cards = document.querySelectorAll(".swipe-card");
+  const rows = document.querySelectorAll(".swipe-row");
 
-  cards.forEach(card => {
+  rows.forEach(row => {
+    const card = row.querySelector(".swipe-card");
+
     let startX = 0;
     let currentX = 0;
-    let isDragging = false;
+    let dragging = false;
 
     card.addEventListener("touchstart", e => {
       startX = e.touches[0].clientX;
       currentX = startX;
-      isDragging = true;
+      dragging = true;
       card.style.transition = "none";
     });
 
     card.addEventListener("touchmove", e => {
-      if (!isDragging) return;
+      if (!dragging) return;
 
       currentX = e.touches[0].clientX;
-      const diffX = currentX - startX;
+      const diff = currentX - startX;
 
-      if (diffX < 0) {
-        const move = Math.max(diffX, -90);
+      if (diff < 0) {
+        const move = Math.max(diff, -96);
         card.style.transform = `translateX(${move}px)`;
       }
     });
 
     card.addEventListener("touchend", () => {
-      isDragging = false;
-      card.style.transition = "0.2s ease";
+      dragging = false;
+      card.style.transition = "transform 0.2s ease";
 
-      const diffX = currentX - startX;
+      const diff = currentX - startX;
 
-      if (diffX < -60) {
-        card.style.transform = "translateX(-90px)";
+      if (diff < -60) {
+        card.style.transform = "translateX(-96px)";
+        row.classList.add("delete-open");
       } else {
         card.style.transform = "translateX(0)";
+        row.classList.remove("delete-open");
       }
     });
-  });
 
-  document.querySelectorAll(".delete-form").forEach(form => {
-    form.addEventListener("submit", e => {
-      const ok = confirm("この支出を削除しますか？");
-      if (!ok) {
-        e.preventDefault();
+    card.addEventListener("click", () => {
+      if (row.classList.contains("delete-open")) {
+        card.style.transform = "translateX(0)";
+        row.classList.remove("delete-open");
       }
     });
   });

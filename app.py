@@ -1,5 +1,5 @@
 import os
-from datetime import datetime
+from datetime import datetime, date
 
 from flask import (
     Flask,
@@ -23,12 +23,15 @@ app.secret_key = os.getenv("SECRET_KEY", "kakeibo-secret-key")
 DATABASE_URL = os.getenv("DATABASE_URL")
 APP_PASSWORD = os.getenv("APP_PASSWORD", "1234")
 
+CLOSING_DAY = 25
+
 CATEGORIES = [
     "旦那に渡す",
     "携帯代",
     "コンカフェ",
     "同伴",
     "交際費",
+    "Uber",
     "シーシャ",
     "服",
     "食費",
@@ -40,6 +43,10 @@ CATEGORIES = [
 BUDGETS = {
     "コンカフェ": 50000,
     "同伴": 10000,
+    "交際費": 30000,
+    "Uber": 15000,
+    "シーシャ": 20000,
+    "交通費": 10000,
     "携帯代": 9000,
     "服": 5000,
     "その他": 20000,
@@ -61,12 +68,60 @@ def get_conn():
     return psycopg2.connect(DATABASE_URL)
 
 
-def this_month():
-    return datetime.now().strftime("%Y-%m")
-
-
 def today():
     return datetime.now().strftime("%Y-%m-%d")
+
+
+def add_month(y, m, delta):
+    m2 = m + delta
+    y2 = y + (m2 - 1) // 12
+    m2 = (m2 - 1) % 12 + 1
+    return y2, m2
+
+
+def this_accounting_month():
+    return get_accounting_month(datetime.now().date())
+
+
+def to_date(v):
+    if isinstance(v, date):
+        return v
+    return datetime.strptime(str(v)[:10], "%Y-%m-%d").date()
+
+
+def get_accounting_month(d):
+    d = to_date(d)
+    y, m = d.year, d.month
+
+    if d.day >= CLOSING_DAY:
+        y, m = add_month(y, m, 1)
+
+    return f"{y:04d}-{m:02d}"
+
+
+def get_period_range(ym):
+    y = int(ym[:4])
+    m = int(ym[5:7])
+
+    py, pm = add_month(y, m, -1)
+
+    start = date(py, pm, CLOSING_DAY)
+    end = date(y, m, CLOSING_DAY)
+
+    return start, end
+
+
+def get_last_accounting_months(n=6):
+    now_ym = this_accounting_month()
+    y = int(now_ym[:4])
+    m = int(now_ym[5:7])
+
+    result = []
+    for i in range(n - 1, -1, -1):
+        yy, mm = add_month(y, m, -i)
+        result.append(f"{yy:04d}-{mm:02d}")
+
+    return result
 
 
 def guess_category(title):
@@ -76,6 +131,10 @@ def guess_category(title):
         return "コンカフェ"
     if "同伴" in title:
         return "同伴"
+    if "Uber" in title or "ウーバー" in title:
+        return "Uber"
+    if "シーシャ" in title:
+        return "シーシャ"
     if "飲み" in title or "ご飯" in title or "ごはん" in title or "デート" in title or "遊び" in title:
         return "交際費"
 
@@ -220,7 +279,8 @@ def logout():
 
 @app.route("/")
 def home():
-    ym = this_month()
+    ym = this_accounting_month()
+    start, end = get_period_range(ym)
     income = get_income(ym)
 
     conn = get_conn()
@@ -229,25 +289,28 @@ def home():
     cur.execute("""
         SELECT category, COALESCE(SUM(amount), 0) AS total
         FROM expenses
-        WHERE TO_CHAR(expense_date, 'YYYY-MM') = %s
+        WHERE expense_date >= %s
+          AND expense_date < %s
         GROUP BY category
         ORDER BY total DESC
-    """, (ym,))
+    """, (start, end))
     category_rows = cur.fetchall()
 
     cur.execute("""
         SELECT COALESCE(SUM(amount), 0) AS total
         FROM expenses
-        WHERE TO_CHAR(expense_date, 'YYYY-MM') = %s
-    """, (ym,))
+        WHERE expense_date >= %s
+          AND expense_date < %s
+    """, (start, end))
     total = cur.fetchone()["total"] or 0
 
     cur.execute("""
         SELECT COALESCE(SUM(amount), 0) AS total
         FROM expenses
-        WHERE TO_CHAR(expense_date, 'YYYY-MM') = %s
-          AND category IN ('コンカフェ', '同伴', '交際費')
-    """, (ym,))
+        WHERE expense_date >= %s
+          AND expense_date < %s
+          AND category IN ('コンカフェ', '同伴', '交際費', 'シーシャ')
+    """, (start, end))
     play_total = cur.fetchone()["total"] or 0
 
     cur.close()
@@ -276,6 +339,9 @@ def home():
     return render_template(
         "home.html",
         active="home",
+        ym=ym,
+        start=start,
+        end=end,
         income=income,
         total=total,
         remain=remain,
@@ -289,7 +355,8 @@ def home():
 
 @app.route("/income", methods=["GET", "POST"])
 def income():
-    ym = this_month()
+    ym = this_accounting_month()
+    start, end = get_period_range(ym)
 
     if request.method == "POST":
         amount = request.form.get("amount")
@@ -321,6 +388,8 @@ def income():
         "income.html",
         active="income",
         ym=ym,
+        start=start,
+        end=end,
         income=current_income,
     )
 
@@ -524,41 +593,33 @@ def delete_candidate(candidate_id):
 @app.route("/compare")
 def compare():
     selected_category = request.args.get("category", "コンカフェ")
-
-    months = []
-    now = datetime.now()
-
-    for i in range(5, -1, -1):
-        y = now.year
-        m = now.month - i
-
-        while m <= 0:
-            m += 12
-            y -= 1
-
-        months.append(f"{y:04d}-{m:02d}")
+    months = get_last_accounting_months(6)
 
     conn = get_conn()
     cur = conn.cursor()
 
     category_values = []
+    play_values = []
+
     for ym in months:
+        start, end = get_period_range(ym)
+
         cur.execute("""
             SELECT COALESCE(SUM(amount), 0)
             FROM expenses
-            WHERE TO_CHAR(expense_date, 'YYYY-MM') = %s
+            WHERE expense_date >= %s
+              AND expense_date < %s
               AND category = %s
-        """, (ym, selected_category))
+        """, (start, end, selected_category))
         category_values.append(cur.fetchone()[0] or 0)
 
-    play_values = []
-    for ym in months:
         cur.execute("""
             SELECT COALESCE(SUM(amount), 0)
             FROM expenses
-            WHERE TO_CHAR(expense_date, 'YYYY-MM') = %s
-              AND category IN ('コンカフェ', '同伴', '交際費')
-        """, (ym,))
+            WHERE expense_date >= %s
+              AND expense_date < %s
+              AND category IN ('コンカフェ', '同伴', '交際費', 'シーシャ')
+        """, (start, end))
         play_values.append(cur.fetchone()[0] or 0)
 
     cur.close()

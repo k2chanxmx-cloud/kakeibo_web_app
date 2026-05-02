@@ -3,13 +3,22 @@
 {% block content %}
 
 <section class="big-card">
-  <p class="label">今月の残り自由費</p>
+  <p class="label">{{ ym[5:] }}月分の残り自由費</p>
+
   <h1 class="{% if remain < 0 %}danger-text{% else %}ok-text{% endif %}">
     {{ remain|yen }}
   </h1>
 
+  <p class="mini">
+    対象期間：{{ start.strftime("%Y/%m/%d") }} 〜 {{ end.strftime("%Y/%m/%d") }}
+  </p>
+
+  <p class="mini">
+    今月分の収入：{{ income|yen }}
+  </p>
+
   {% if remain < 0 %}
-    <p class="mini danger-text">今月、予算オーバー中</p>
+    <p class="mini danger-text">今月分、予算オーバー中</p>
   {% else %}
     <p class="mini">まだ大丈夫。残り自由費を守れば勝ち。</p>
   {% endif %}
@@ -17,7 +26,7 @@
 
 <section class="card">
   <div class="section-head">
-    <h2>今月の支出内訳</h2>
+    <h2>今月分の支出内訳</h2>
     <span>{{ total|yen }}</span>
   </div>
 
@@ -55,7 +64,7 @@
       </div>
     {% endfor %}
   {% else %}
-    <p class="empty">今月はまだ危険ラインなし。えらい。</p>
+    <p class="empty">今月分はまだ危険ラインなし。えらい。</p>
   {% endif %}
 </section>
 

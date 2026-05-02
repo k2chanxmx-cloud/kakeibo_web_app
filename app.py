@@ -147,6 +147,16 @@ def init_db():
     cur = conn.cursor()
 
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS income_records (
+            id SERIAL PRIMARY KEY,
+            income_date DATE NOT NULL,
+            amount INTEGER NOT NULL,
+            memo TEXT,
+            created_at TIMESTAMP DEFAULT NOW()
+        );
+    """)
+
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS expenses (
             id SERIAL PRIMARY KEY,
             expense_date DATE NOT NULL,
@@ -188,25 +198,25 @@ def init_db():
     conn.close()
 
 
-def get_income(ym):
+def get_income_total(ym):
+    start, end = get_period_range(ym)
+
     conn = get_conn()
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT amount
-        FROM incomes
-        WHERE year_month = %s
-    """, (ym,))
+        SELECT COALESCE(SUM(amount), 0)
+        FROM income_records
+        WHERE income_date >= %s
+          AND income_date < %s
+    """, (start, end))
 
-    row = cur.fetchone()
+    total = cur.fetchone()[0] or 0
 
     cur.close()
     conn.close()
 
-    if row:
-        return row[0]
-
-    return 0
+    return total
 
 
 def login_required():
@@ -282,7 +292,7 @@ def logout():
 def home():
     ym = this_accounting_month()
     start, end = get_period_range(ym)
-    income = get_income(ym)
+    income = get_income_total(ym)
 
     conn = get_conn()
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -360,30 +370,54 @@ def income():
     start, end = get_period_range(ym)
 
     if request.method == "POST":
+        income_date = request.form.get("income_date")
         amount = request.form.get("amount")
+        memo = request.form.get("memo")
 
-        if not amount:
-            flash("収入を入力してください")
+        if not income_date or not amount:
+            flash("日付と金額を入力してください")
             return redirect(url_for("income"))
 
         conn = get_conn()
         cur = conn.cursor()
 
         cur.execute("""
-            INSERT INTO incomes (year_month, amount)
-            VALUES (%s, %s)
-            ON CONFLICT (year_month)
-            DO UPDATE SET amount = EXCLUDED.amount
-        """, (ym, int(amount)))
+            INSERT INTO income_records (
+                income_date,
+                amount,
+                memo
+            )
+            VALUES (%s, %s, %s)
+        """, (
+            income_date,
+            int(amount),
+            memo,
+        ))
 
         conn.commit()
         cur.close()
         conn.close()
 
-        flash("収入を保存しました")
-        return redirect(url_for("home"))
+        flash("収入を追加しました")
+        return redirect(url_for("income"))
 
-    current_income = get_income(ym)
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    cur.execute("""
+        SELECT *
+        FROM income_records
+        WHERE income_date >= %s
+          AND income_date < %s
+        ORDER BY income_date DESC, id DESC
+    """, (start, end))
+
+    rows = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    income_total = get_income_total(ym)
 
     return render_template(
         "income.html",
@@ -391,9 +425,27 @@ def income():
         ym=ym,
         start=start,
         end=end,
-        income=current_income,
+        today=today(),
+        rows=rows,
+        income_total=income_total,
     )
 
+@app.route("/income/<int:income_id>/delete", methods=["POST"])
+def delete_income(income_id):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+        DELETE FROM income_records
+        WHERE id = %s
+    """, (income_id,))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    flash("収入を削除しました")
+    return redirect(url_for("income"))
 
 @app.route("/input", methods=["GET", "POST"])
 def input_expense():
@@ -460,6 +512,7 @@ def candidates():
         "candidates.html",
         active="candidates",
         rows=rows,
+        categories=CATEGORIES,
     )
 
 
@@ -515,9 +568,14 @@ def import_candidates():
 @app.route("/candidates/<int:candidate_id>/confirm", methods=["POST"])
 def confirm_candidate(candidate_id):
     amount = request.form.get("amount")
+    category = request.form.get("category")
 
     if not amount:
         flash("金額を入力してください")
+        return redirect(url_for("candidates"))
+
+    if not category:
+        flash("カテゴリを選択してください")
         return redirect(url_for("candidates"))
 
     conn = get_conn()
@@ -548,7 +606,7 @@ def confirm_candidate(candidate_id):
         VALUES (%s, %s, %s, %s, %s, %s)
     """, (
         c["event_date"],
-        c["category"],
+        category,
         int(amount),
         f"カレンダー連携：{c['title']}",
         c["owner"],
@@ -558,10 +616,12 @@ def confirm_candidate(candidate_id):
     cur.execute("""
         UPDATE expense_candidates
         SET amount = %s,
+            category = %s,
             status = 'confirmed'
         WHERE id = %s
     """, (
         int(amount),
+        category,
         candidate_id,
     ))
 

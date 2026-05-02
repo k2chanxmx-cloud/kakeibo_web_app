@@ -3,32 +3,71 @@
 {% block content %}
 
 <section class="big-card">
-  <h1>収入設定</h1>
-  <p class="mini">{{ ym }} の収入を登録します。</p>
+  <h1>収入追加</h1>
+  <p class="mini">
+    {{ ym[5:] }}月分：{{ start.strftime("%Y/%m/%d") }} 〜 {{ end.strftime("%Y/%m/%d") }}
+  </p>
 
   <form method="post" class="form">
-    <label>今月の収入</label>
+    <label>日付</label>
+    <input
+      class="input"
+      type="date"
+      name="income_date"
+      value="{{ today }}"
+      required
+    >
+
+    <label>金額</label>
     <input
       class="input"
       type="number"
       name="amount"
-      value="{% if income %}{{ income }}{% endif %}"
       placeholder="例：160000"
       required
     >
 
-    <button class="primary-btn">保存する</button>
+    <label>メモ</label>
+    <input
+      class="input"
+      type="text"
+      name="memo"
+      placeholder="例：給料、旦那から、PayPayなど"
+    >
+
+    <button class="primary-btn">収入を追加</button>
   </form>
 </section>
 
 <section class="card">
-  <h2>現在の設定</h2>
-
-  {% if income %}
-    <p class="big-number">{{ income|yen }}</p>
-  {% else %}
-    <p class="empty">まだ収入が設定されていません</p>
-  {% endif %}
+  <h2>この期間の収入合計</h2>
+  <p class="big-number">{{ income_total|yen }}</p>
 </section>
+
+{% if rows %}
+  {% for r in rows %}
+    <section class="history-card">
+      <div>
+        <div class="event-date">{{ r.income_date.strftime("%Y/%m/%d") }}</div>
+        <h2>{{ r.amount|yen }}</h2>
+        <p class="mini">
+          {% if r.memo %}
+            {{ r.memo }}
+          {% else %}
+            メモなし
+          {% endif %}
+        </p>
+      </div>
+
+      <form method="post" action="{{ url_for('delete_income', income_id=r.id) }}">
+        <button type="submit" class="small-delete">削除</button>
+      </form>
+    </section>
+  {% endfor %}
+{% else %}
+  <section class="card">
+    <p class="empty">この期間の収入はまだありません</p>
+  </section>
+{% endif %}
 
 {% endblock %}

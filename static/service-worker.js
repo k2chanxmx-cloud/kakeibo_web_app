@@ -1,5 +1,9 @@
-self.addEventListener("install", e => {
+self.addEventListener("install", event => {
   self.skipWaiting();
 });
 
-self.addEventListener("fetch", e => {});
+self.addEventListener("activate", event => {
+  self.clients.claim();
+});
+
+self.addEventListener("fetch", event => {});

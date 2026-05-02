@@ -9,28 +9,28 @@
 
 {% if rows %}
   {% for r in rows %}
-    <section class="swipe-row">
-      <form
-        method="post"
-        action="{{ url_for('delete_expense', expense_id=r.id) }}"
-        class="swipe-delete-form"
-        onsubmit="return confirm('この支出を削除しますか？');"
-      >
-        <button type="submit" class="swipe-delete-btn">削除</button>
+    <section class="history-card">
+
+      <div>
+        <div class="event-date">{{ r.expense_date.strftime("%Y/%m/%d") }}</div>
+        <h2>{{ r.category }}　{{ r.amount|yen }}</h2>
+
+        <p class="mini">
+          {{ r.owner or "" }}
+          {% if r.memo %}
+            ／ {{ r.memo }}
+          {% endif %}
+        </p>
+      </div>
+
+      <form method="post"
+            action="{{ url_for('delete_expense', expense_id=r.id) }}"
+            onsubmit="return confirm('この支出を削除しますか？');">
+        <button type="submit" class="small-delete">
+          削除
+        </button>
       </form>
 
-      <div class="history-card swipe-card">
-        <div>
-          <div class="event-date">{{ r.expense_date.strftime("%Y/%m/%d") }}</div>
-          <h2>{{ r.category }}　{{ r.amount|yen }}</h2>
-          <p class="mini">
-            {{ r.owner or "" }}
-            {% if r.memo %}
-              ／ {{ r.memo }}
-            {% endif %}
-          </p>
-        </div>
-      </div>
     </section>
   {% endfor %}
 {% else %}
@@ -38,60 +38,5 @@
     <p class="empty">履歴はありません</p>
   </section>
 {% endif %}
-
-<script>
-document.addEventListener("DOMContentLoaded", () => {
-  const rows = document.querySelectorAll(".swipe-row");
-
-  rows.forEach(row => {
-    const card = row.querySelector(".swipe-card");
-
-    let startX = 0;
-    let currentX = 0;
-    let dragging = false;
-
-    card.addEventListener("touchstart", e => {
-      startX = e.touches[0].clientX;
-      currentX = startX;
-      dragging = true;
-      card.style.transition = "none";
-    });
-
-    card.addEventListener("touchmove", e => {
-      if (!dragging) return;
-
-      currentX = e.touches[0].clientX;
-      const diff = currentX - startX;
-
-      if (diff < 0) {
-        const move = Math.max(diff, -96);
-        card.style.transform = `translateX(${move}px)`;
-      }
-    });
-
-    card.addEventListener("touchend", () => {
-      dragging = false;
-      card.style.transition = "transform 0.2s ease";
-
-      const diff = currentX - startX;
-
-      if (diff < -60) {
-        card.style.transform = "translateX(-96px)";
-        row.classList.add("delete-open");
-      } else {
-        card.style.transform = "translateX(0)";
-        row.classList.remove("delete-open");
-      }
-    });
-
-    card.addEventListener("click", () => {
-      if (row.classList.contains("delete-open")) {
-        card.style.transform = "translateX(0)";
-        row.classList.remove("delete-open");
-      }
-    });
-  });
-});
-</script>
 
 {% endblock %}

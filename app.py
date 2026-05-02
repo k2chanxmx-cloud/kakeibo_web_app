@@ -1,6 +1,10 @@
 import os
 from datetime import datetime, date
 
+import jpholiday
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from dotenv import load_dotenv
 from flask import (
     Flask,
     render_template,
@@ -11,9 +15,6 @@ from flask import (
     flash,
     send_from_directory,
 )
-import psycopg2
-from psycopg2.extras import RealDictCursor
-from dotenv import load_dotenv
 
 load_dotenv()
 
@@ -23,7 +24,7 @@ app.secret_key = os.getenv("SECRET_KEY", "kakeibo-secret-key")
 DATABASE_URL = os.getenv("DATABASE_URL")
 APP_PASSWORD = os.getenv("APP_PASSWORD", "1234")
 
-CLOSING_DAY = 25
+PAYDAY = 25
 
 CATEGORIES = [
     "旦那に渡す",
@@ -46,12 +47,15 @@ BUDGETS = {
     "同伴": 10000,
     "交際費": 30000,
     "Uber": 15000,
+    "タクシー": 15000,
     "シーシャ": 20000,
     "交通費": 10000,
     "携帯代": 9000,
     "服": 5000,
     "その他": 20000,
 }
+
+PLAY_CATEGORIES = ["コンカフェ", "同伴", "交際費", "シーシャ"]
 
 
 def yen(value):
@@ -80,24 +84,43 @@ def add_month(y, m, delta):
     return y2, m2
 
 
-def this_accounting_month():
-    return get_accounting_month(datetime.now().date())
-
-
 def to_date(v):
     if isinstance(v, date):
         return v
     return datetime.strptime(str(v)[:10], "%Y-%m-%d").date()
 
 
+def is_business_day(d):
+    if d.weekday() >= 5:
+        return False
+    if jpholiday.is_holiday(d):
+        return False
+    return True
+
+
+def get_actual_payday(year, month):
+    d = date(year, month, PAYDAY)
+
+    while not is_business_day(d):
+        d = date(d.year, d.month, d.day - 1)
+
+    return d
+
+
 def get_accounting_month(d):
     d = to_date(d)
-    y, m = d.year, d.month
 
-    if d.day >= CLOSING_DAY:
-        y, m = add_month(y, m, 1)
+    actual_payday = get_actual_payday(d.year, d.month)
 
-    return f"{y:04d}-{m:02d}"
+    if d >= actual_payday:
+        y, m = add_month(d.year, d.month, 1)
+        return f"{y:04d}-{m:02d}"
+
+    return f"{d.year:04d}-{d.month:02d}"
+
+
+def this_accounting_month():
+    return get_accounting_month(datetime.now().date())
 
 
 def get_period_range(ym):
@@ -106,8 +129,8 @@ def get_period_range(ym):
 
     py, pm = add_month(y, m, -1)
 
-    start = date(py, pm, CLOSING_DAY)
-    end = date(y, m, CLOSING_DAY)
+    start = get_actual_payday(py, pm)
+    end = get_actual_payday(y, m)
 
     return start, end
 
@@ -134,9 +157,17 @@ def guess_category(title):
         return "同伴"
     if "Uber" in title or "ウーバー" in title:
         return "Uber"
+    if "タクシー" in title:
+        return "タクシー"
     if "シーシャ" in title:
         return "シーシャ"
-    if "飲み" in title or "ご飯" in title or "ごはん" in title or "デート" in title or "遊び" in title:
+    if (
+        "飲み" in title
+        or "ご飯" in title
+        or "ごはん" in title
+        or "デート" in title
+        or "遊び" in title
+    ):
         return "交際費"
 
     return "交際費"
@@ -145,16 +176,6 @@ def guess_category(title):
 def init_db():
     conn = get_conn()
     cur = conn.cursor()
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS income_records (
-            id SERIAL PRIMARY KEY,
-            income_date DATE NOT NULL,
-            amount INTEGER NOT NULL,
-            memo TEXT,
-            created_at TIMESTAMP DEFAULT NOW()
-        );
-    """)
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS expenses (
@@ -185,10 +206,11 @@ def init_db():
     """)
 
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS incomes (
+        CREATE TABLE IF NOT EXISTS income_records (
             id SERIAL PRIMARY KEY,
-            year_month TEXT UNIQUE,
+            income_date DATE NOT NULL,
             amount INTEGER NOT NULL,
+            memo TEXT,
             created_at TIMESTAMP DEFAULT NOW()
         );
     """)
@@ -411,7 +433,6 @@ def income():
           AND income_date < %s
         ORDER BY income_date DESC, id DESC
     """, (start, end))
-
     rows = cur.fetchall()
 
     cur.close()
@@ -430,6 +451,7 @@ def income():
         income_total=income_total,
     )
 
+
 @app.route("/income/<int:income_id>/delete", methods=["POST"])
 def delete_income(income_id):
     conn = get_conn()
@@ -446,6 +468,7 @@ def delete_income(income_id):
 
     flash("収入を削除しました")
     return redirect(url_for("income"))
+
 
 @app.route("/input", methods=["GET", "POST"])
 def input_expense():

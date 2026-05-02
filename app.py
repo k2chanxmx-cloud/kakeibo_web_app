@@ -214,6 +214,16 @@ def init_db():
             created_at TIMESTAMP DEFAULT NOW()
         );
     """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS savings_records (
+            id SERIAL PRIMARY KEY,
+            saving_date DATE NOT NULL,
+            amount INTEGER NOT NULL,
+            type TEXT NOT NULL,
+            memo TEXT,
+            created_at TIMESTAMP DEFAULT NOW()
+        );
+    """)
 
     conn.commit()
     cur.close()
@@ -766,6 +776,117 @@ def delete_expense(expense_id):
 
     return redirect(url_for("history"))
 
+@app.route("/savings", methods=["GET", "POST"])
+def savings():
+    ym = this_accounting_month()
+    start, end = get_period_range(ym)
+
+    if request.method == "POST":
+        saving_date = request.form.get("saving_date")
+        amount = request.form.get("amount")
+        saving_type = request.form.get("type")
+        memo = request.form.get("memo")
+
+        if not saving_date or not amount or not saving_type:
+            flash("日付・金額・種別を入力してください")
+            return redirect(url_for("savings"))
+
+        conn = get_conn()
+        cur = conn.cursor()
+
+        cur.execute("""
+            INSERT INTO savings_records (
+                saving_date,
+                amount,
+                type,
+                memo
+            )
+            VALUES (%s, %s, %s, %s)
+        """, (
+            saving_date,
+            int(amount),
+            saving_type,
+            memo,
+        ))
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        flash("貯金を登録しました")
+        return redirect(url_for("savings"))
+
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    cur.execute("""
+        SELECT
+            COALESCE(SUM(
+                CASE
+                    WHEN type = 'deposit' THEN amount
+                    WHEN type = 'withdraw' THEN -amount
+                    ELSE 0
+                END
+            ), 0) AS total
+        FROM savings_records
+    """)
+    total_savings = cur.fetchone()["total"] or 0
+
+    cur.execute("""
+        SELECT
+            COALESCE(SUM(
+                CASE
+                    WHEN type = 'deposit' THEN amount
+                    WHEN type = 'withdraw' THEN -amount
+                    ELSE 0
+                END
+            ), 0) AS total
+        FROM savings_records
+        WHERE saving_date >= %s
+          AND saving_date < %s
+    """, (start, end))
+    monthly_savings = cur.fetchone()["total"] or 0
+
+    cur.execute("""
+        SELECT *
+        FROM savings_records
+        ORDER BY saving_date DESC, id DESC
+        LIMIT 100
+    """)
+    rows = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    return render_template(
+        "savings.html",
+        active="savings",
+        today=today(),
+        ym=ym,
+        start=start,
+        end=end,
+        total_savings=total_savings,
+        monthly_savings=monthly_savings,
+        rows=rows,
+    )
+
+
+@app.route("/savings/<int:saving_id>/delete", methods=["POST"])
+def delete_saving(saving_id):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+        DELETE FROM savings_records
+        WHERE id = %s
+    """, (saving_id,))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    flash("貯金履歴を削除しました")
+    return redirect(url_for("savings"))
 
 if __name__ == "__main__":
     app.run(debug=True, host="127.0.0.1", port=5000)

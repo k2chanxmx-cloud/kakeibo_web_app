@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<section class="big-card">
+  <h1>貯金</h1>
+  <p class="mini">
+    {{ ym[5:] }}月分：{{ start.strftime("%Y/%m/%d") }} 〜 {{ end.strftime("%Y/%m/%d") }}
+  </p>
+</section>
+
+<section class="summary-grid">
+  <div class="mini-card">
+    <p>貯金総額</p>
+    <strong>{{ total_savings|yen }}</strong>
+  </div>
+  <div class="mini-card">
+    <p>今月分の貯金</p>
+    <strong>{{ monthly_savings|yen }}</strong>
+  </div>
+</section>
+
+<section class="big-card">
+  <h1>貯金を登録</h1>
+
+  <form method="post" class="form">
+    <label>日付</label>
+    <input class="input" type="date" name="saving_date" value="{{ today }}" required>
+
+    <label>種別</label>
+    <select class="input" name="type" required>
+      <option value="deposit">貯金する</option>
+      <option value="withdraw">貯金を崩す</option>
+    </select>
+
+    <label>金額</label>
+    <input class="input" type="number" name="amount" placeholder="例：20000" required>
+
+    <label>メモ</label>
+    <input class="input" type="text" name="memo" placeholder="例：給料から、コンカフェ用に崩す">
+
+    <button class="primary-btn">登録する</button>
+  </form>
+</section>
+
+{% if rows %}
+  {% for r in rows %}
+    <section class="history-card">
+      <div>
+        <div class="event-date">{{ r.saving_date.strftime("%Y/%m/%d") }}</div>
+
+        {% if r.type == "deposit" %}
+          <h2 class="ok-text">＋{{ r.amount|yen }}</h2>
+          <p class="mini">貯金する{% if r.memo %} ／ {{ r.memo }}{% endif %}</p>
+        {% else %}
+          <h2 class="danger-text">−{{ r.amount|yen }}</h2>
+          <p class="mini">貯金を崩す{% if r.memo %} ／ {{ r.memo }}{% endif %}</p>
+        {% endif %}
+      </div>
+
+      <form method="post" action="{{ url_for('delete_saving', saving_id=r.id) }}">
+        <button type="submit" class="small-delete">削除</button>
+      </form>
+    </section>
+  {% endfor %}
+{% else %}
+  <section class="card">
+    <p class="empty">貯金履歴はまだありません</p>
+  </section>
+{% endif %}
+
+{% endblock %}

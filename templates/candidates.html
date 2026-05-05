@@ -3,32 +3,38 @@
 {% block content %}
 
 <section class="big-card">
-  <div class="section-head">
-    <h1>予定から入力</h1>
-  </div>
+  <h1>データ取り込み</h1>
+  <p class="mini">カレンダー予定とUberメールから、家計簿候補を作ります。</p>
 
   <form method="post" action="{{ url_for('import_candidates') }}">
     <button class="primary-btn">カレンダー予定を取り込む</button>
   </form>
 
-  <p class="mini">
-    担当者が「まき」「二人」の予定だけ取り込みます。
-  </p>
+  <form method="post" action="{{ url_for('import_uber_candidates') }}">
+    <button class="primary-btn">Uberメールを取り込む</button>
+  </form>
 </section>
 
 {% if rows %}
   {% for r in rows %}
     <section class="event-card">
       <div class="event-date">{{ r.event_date.strftime("%Y/%m/%d") }}</div>
+
       <h2>{{ r.title }}</h2>
 
       <div class="chips">
+        <span class="chip">
+          {% if r.source_type == "uber" %}
+            Uber
+          {% else %}
+            カレンダー
+          {% endif %}
+        </span>
         <span class="chip">{{ r.owner }}</span>
         <span class="chip">{{ r.category }}</span>
       </div>
 
       <form method="post" action="{{ url_for('confirm_candidate', candidate_id=r.id) }}" class="amount-form">
-
         <label>カテゴリ</label>
         <select class="input" name="category" required>
           {% for c in categories %}
@@ -39,19 +45,26 @@
         </select>
 
         <label>確定金額</label>
-        <input class="input" type="number" name="amount" placeholder="例：6000" required>
+        <input
+          class="input"
+          type="number"
+          name="amount"
+          value="{% if r.amount %}{{ r.amount }}{% endif %}"
+          placeholder="例：6000"
+          required
+        >
 
         <button class="primary-btn">家計簿に反映</button>
       </form>
 
       <form method="post" action="{{ url_for('delete_candidate', candidate_id=r.id) }}">
-        <button type="submit" class="delete-btn">この予定を削除</button>
+        <button type="submit" class="delete-btn">このデータを削除</button>
       </form>
     </section>
   {% endfor %}
 {% else %}
   <section class="card">
-    <p class="empty">未確定の予定はありません</p>
+    <p class="empty">未確定データはありません</p>
   </section>
 {% endif %}
 

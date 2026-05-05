@@ -1,10 +1,21 @@
 import os
+import json
+import base64
+import hashlib
+import re
 from datetime import datetime, date
+from email.utils import parsedate_to_datetime
 
 import jpholiday
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
+from bs4 import BeautifulSoup
+
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
+from googleapiclient.discovery import build
+
 from flask import (
     Flask,
     render_template,
@@ -25,6 +36,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 APP_PASSWORD = os.getenv("APP_PASSWORD", "1234")
 
 PAYDAY = 25
+GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 
 CATEGORIES = [
     "旦那に渡す",
@@ -109,7 +121,6 @@ def get_actual_payday(year, month):
 
 def get_accounting_month(d):
     d = to_date(d)
-
     actual_payday = get_actual_payday(d.year, d.month)
 
     if d >= actual_payday:
@@ -141,6 +152,7 @@ def get_last_accounting_months(n=6):
     m = int(now_ym[5:7])
 
     result = []
+
     for i in range(n - 1, -1, -1):
         yy, mm = add_month(y, m, -i)
         result.append(f"{yy:04d}-{mm:02d}")
@@ -206,6 +218,21 @@ def init_db():
     """)
 
     cur.execute("""
+        ALTER TABLE expense_candidates
+        ADD COLUMN IF NOT EXISTS source_type TEXT DEFAULT 'calendar';
+    """)
+
+    cur.execute("""
+        ALTER TABLE expense_candidates
+        ADD COLUMN IF NOT EXISTS source_key TEXT;
+    """)
+
+    cur.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_expense_candidates_source_key
+        ON expense_candidates(source_key);
+    """)
+
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS income_records (
             id SERIAL PRIMARY KEY,
             income_date DATE NOT NULL,
@@ -214,6 +241,7 @@ def init_db():
             created_at TIMESTAMP DEFAULT NOW()
         );
     """)
+
     cur.execute("""
         CREATE TABLE IF NOT EXISTS savings_records (
             id SERIAL PRIMARY KEY,
@@ -255,6 +283,197 @@ def login_required():
     return session.get("logged_in") is True
 
 
+# ==============================
+# Gmail / Uber Eats
+# ==============================
+def get_gmail_credentials():
+    token_json = os.getenv("GMAIL_TOKEN_JSON")
+
+    if token_json:
+        info = json.loads(token_json)
+        creds = Credentials.from_authorized_user_info(info, GMAIL_SCOPES)
+    else:
+        creds = Credentials.from_authorized_user_file("token.json", GMAIL_SCOPES)
+
+    if creds and creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+
+    return creds
+
+
+def get_gmail_service():
+    creds = get_gmail_credentials()
+    return build("gmail", "v1", credentials=creds)
+
+
+def decode_gmail_part(data):
+    if not data:
+        return ""
+
+    missing_padding = len(data) % 4
+    if missing_padding:
+        data += "=" * (4 - missing_padding)
+
+    return base64.urlsafe_b64decode(data.encode("utf-8")).decode(
+        "utf-8",
+        errors="ignore"
+    )
+
+
+def extract_body_from_payload(payload):
+    body_data = payload.get("body", {}).get("data")
+
+    if body_data:
+        return decode_gmail_part(body_data)
+
+    texts = []
+
+    for part in payload.get("parts", []):
+        mime = part.get("mimeType", "")
+
+        if mime in ["text/plain", "text/html"]:
+            data = part.get("body", {}).get("data")
+            if data:
+                texts.append(decode_gmail_part(data))
+
+        if part.get("parts"):
+            texts.append(extract_body_from_payload(part))
+
+    return "\n".join(texts)
+
+
+def clean_mail_text(text):
+    text = text or ""
+
+    if "<html" in text.lower() or "<body" in text.lower():
+        soup = BeautifulSoup(text, "html.parser")
+        return soup.get_text("\n")
+
+    return text
+
+
+def extract_uber_amount(text):
+    text = clean_mail_text(text)
+    text = text.replace("\xa0", " ")
+
+    patterns = [
+        r"(?:合計|総計|ご請求額|お支払い|Total)[^\d¥￥]{0,40}[¥￥]\s*([\d,]+)",
+        r"[¥￥]\s*([\d,]+)",
+    ]
+
+    for pattern in patterns:
+        matches = re.findall(pattern, text, flags=re.IGNORECASE)
+        if matches:
+            amounts = [int(m.replace(",", "")) for m in matches]
+            return max(amounts)
+
+    return None
+
+
+def get_header(headers, name):
+    return next(
+        (h["value"] for h in headers if h["name"].lower() == name.lower()),
+        ""
+    )
+
+
+def gmail_message_to_date(headers):
+    date_text = get_header(headers, "Date")
+
+    if not date_text:
+        return today()
+
+    try:
+        dt = parsedate_to_datetime(date_text)
+        return dt.date().strftime("%Y-%m-%d")
+    except Exception:
+        return today()
+
+
+def gmail_message_key(msg_id):
+    digest = hashlib.sha1(msg_id.encode("utf-8")).hexdigest()
+    return -1 * (int(digest[:8], 16) % 1000000000)
+
+
+def import_uber_messages_to_candidates():
+    service = get_gmail_service()
+
+    results = service.users().messages().list(
+        userId="me",
+        q='from:(uber.com OR ubereats.com) newer_than:180d',
+        maxResults=20
+    ).execute()
+
+    messages = results.get("messages", [])
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    imported_count = 0
+
+    for msg in messages:
+        msg_id = msg["id"]
+
+        detail = service.users().messages().get(
+            userId="me",
+            id=msg_id,
+            format="full"
+        ).execute()
+
+        payload = detail.get("payload", {})
+        headers = payload.get("headers", [])
+
+        subject = get_header(headers, "Subject") or "Uber Eats"
+        body = extract_body_from_payload(payload)
+
+        amount = extract_uber_amount(body)
+        event_date = gmail_message_to_date(headers)
+
+        if not amount:
+            continue
+
+        source_key = f"gmail_uber_{msg_id}"
+        source_event_id = gmail_message_key(msg_id)
+
+        cur.execute("""
+            INSERT INTO expense_candidates (
+                source_event_id,
+                event_date,
+                title,
+                owner,
+                category,
+                amount,
+                status,
+                memo,
+                source_type,
+                source_key
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, 'pending', %s, 'uber', %s)
+            ON CONFLICT DO NOTHING
+        """, (
+            source_event_id,
+            event_date,
+            subject,
+            "まき",
+            "Uber",
+            amount,
+            "Gmailから取り込み",
+            source_key,
+        ))
+
+        if cur.rowcount > 0:
+            imported_count += 1
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    return imported_count
+
+
+# ==============================
+# 共通
+# ==============================
 @app.before_request
 def before_request():
     if request.endpoint in ["login", "static", "manifest", "service_worker"]:
@@ -276,6 +495,9 @@ def service_worker():
     return send_from_directory("static", "service-worker.js")
 
 
+# ==============================
+# ログイン
+# ==============================
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
@@ -320,6 +542,9 @@ def logout():
     return redirect(url_for("login"))
 
 
+# ==============================
+# ホーム
+# ==============================
 @app.route("/")
 def home():
     ym = this_accounting_month()
@@ -367,6 +592,7 @@ def home():
     for category, budget in BUDGETS.items():
         spent = data_map.get(category, 0)
         rate = spent / budget if budget else 0
+
         if rate >= 0.7:
             overuse.append({
                 "category": category,
@@ -396,6 +622,9 @@ def home():
     )
 
 
+# ==============================
+# 収入
+# ==============================
 @app.route("/income", methods=["GET", "POST"])
 def income():
     ym = this_accounting_month()
@@ -480,6 +709,9 @@ def delete_income(income_id):
     return redirect(url_for("income"))
 
 
+# ==============================
+# 支出入力
+# ==============================
 @app.route("/input", methods=["GET", "POST"])
 def input_expense():
     if request.method == "POST":
@@ -525,257 +757,9 @@ def input_expense():
     )
 
 
-@app.route("/candidates")
-def candidates():
-    conn = get_conn()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-
-    cur.execute("""
-        SELECT *
-        FROM expense_candidates
-        WHERE status = 'pending'
-        ORDER BY event_date ASC, id ASC
-    """)
-    rows = cur.fetchall()
-
-    cur.close()
-    conn.close()
-
-    return render_template(
-        "candidates.html",
-        active="candidates",
-        rows=rows,
-        categories=CATEGORIES,
-    )
-
-
-@app.route("/candidates/import", methods=["POST"])
-def import_candidates():
-    conn = get_conn()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-
-    cur.execute("""
-        SELECT id, start_date, title, owner, memo
-        FROM events
-        WHERE owner IN ('まき', '二人')
-        ORDER BY start_date ASC
-    """)
-    events = cur.fetchall()
-
-    count = 0
-
-    for event in events:
-        cur.execute("""
-            INSERT INTO expense_candidates (
-                source_event_id,
-                event_date,
-                title,
-                owner,
-                category,
-                amount,
-                status,
-                memo
-            )
-            VALUES (%s, %s, %s, %s, %s, NULL, 'pending', %s)
-            ON CONFLICT (source_event_id) DO NOTHING
-        """, (
-            event["id"],
-            event["start_date"],
-            event["title"],
-            event["owner"],
-            guess_category(event["title"]),
-            event.get("memo") or "",
-        ))
-
-        if cur.rowcount > 0:
-            count += 1
-
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    flash(f"{count}件取り込みました")
-    return redirect(url_for("candidates"))
-
-
-@app.route("/candidates/<int:candidate_id>/confirm", methods=["POST"])
-def confirm_candidate(candidate_id):
-    amount = request.form.get("amount")
-    category = request.form.get("category")
-
-    if not amount:
-        flash("金額を入力してください")
-        return redirect(url_for("candidates"))
-
-    if not category:
-        flash("カテゴリを選択してください")
-        return redirect(url_for("candidates"))
-
-    conn = get_conn()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-
-    cur.execute("""
-        SELECT *
-        FROM expense_candidates
-        WHERE id = %s
-    """, (candidate_id,))
-    c = cur.fetchone()
-
-    if not c:
-        flash("対象が見つかりません")
-        cur.close()
-        conn.close()
-        return redirect(url_for("candidates"))
-
-    cur.execute("""
-        INSERT INTO expenses (
-            expense_date,
-            category,
-            amount,
-            memo,
-            owner,
-            source_event_id
-        )
-        VALUES (%s, %s, %s, %s, %s, %s)
-    """, (
-        c["event_date"],
-        category,
-        int(amount),
-        f"カレンダー連携：{c['title']}",
-        c["owner"],
-        c["source_event_id"],
-    ))
-
-    cur.execute("""
-        UPDATE expense_candidates
-        SET amount = %s,
-            category = %s,
-            status = 'confirmed'
-        WHERE id = %s
-    """, (
-        int(amount),
-        category,
-        candidate_id,
-    ))
-
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    flash("家計簿に反映しました")
-    return redirect(url_for("home"))
-
-
-@app.route("/candidates/<int:candidate_id>/delete", methods=["POST"])
-def delete_candidate(candidate_id):
-    conn = get_conn()
-    cur = conn.cursor()
-
-    cur.execute("""
-        DELETE FROM expense_candidates
-        WHERE id = %s
-    """, (candidate_id,))
-
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    flash("予定候補を削除しました")
-    return redirect(url_for("candidates"))
-
-
-@app.route("/compare")
-def compare():
-    selected_category = request.args.get("category", "コンカフェ")
-    months = get_last_accounting_months(6)
-
-    conn = get_conn()
-    cur = conn.cursor()
-
-    category_values = []
-    play_values = []
-
-    for ym in months:
-        start, end = get_period_range(ym)
-
-        cur.execute("""
-            SELECT COALESCE(SUM(amount), 0)
-            FROM expenses
-            WHERE expense_date >= %s
-              AND expense_date < %s
-              AND category = %s
-        """, (start, end, selected_category))
-        category_values.append(cur.fetchone()[0] or 0)
-
-        cur.execute("""
-            SELECT COALESCE(SUM(amount), 0)
-            FROM expenses
-            WHERE expense_date >= %s
-              AND expense_date < %s
-              AND category IN ('コンカフェ', '同伴', '交際費', 'シーシャ')
-        """, (start, end))
-        play_values.append(cur.fetchone()[0] or 0)
-
-    cur.close()
-    conn.close()
-
-    return render_template(
-        "compare.html",
-        active="compare",
-        categories=CATEGORIES,
-        selected_category=selected_category,
-        labels=[m[5:] + "月" for m in months],
-        category_values=[int(v) for v in category_values],
-        play_values=[int(v) for v in play_values],
-    )
-
-
-@app.route("/history")
-def history():
-    conn = get_conn()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-
-    cur.execute("""
-        SELECT *
-        FROM expenses
-        ORDER BY expense_date DESC, id DESC
-        LIMIT 200
-    """)
-    rows = cur.fetchall()
-
-    cur.close()
-    conn.close()
-
-    return render_template(
-        "history.html",
-        active="history",
-        rows=rows,
-    )
-
-
-@app.route("/history/<int:expense_id>/delete", methods=["POST"])
-def delete_expense(expense_id):
-    conn = get_conn()
-    cur = conn.cursor()
-
-    cur.execute("""
-        DELETE FROM expenses
-        WHERE id = %s
-    """, (expense_id,))
-
-    deleted_count = cur.rowcount
-
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    if deleted_count > 0:
-        flash("削除しました")
-    else:
-        flash("削除対象が見つかりませんでした")
-
-    return redirect(url_for("history"))
-
+# ==============================
+# 貯金
+# ==============================
 @app.route("/savings", methods=["GET", "POST"])
 def savings():
     ym = this_accounting_month()
@@ -887,6 +871,284 @@ def delete_saving(saving_id):
 
     flash("貯金履歴を削除しました")
     return redirect(url_for("savings"))
+
+
+# ==============================
+# データ取り込み
+# ==============================
+@app.route("/candidates")
+def candidates():
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    cur.execute("""
+        SELECT *
+        FROM expense_candidates
+        WHERE status = 'pending'
+        ORDER BY event_date ASC, id ASC
+    """)
+    rows = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    return render_template(
+        "candidates.html",
+        active="candidates",
+        rows=rows,
+        categories=CATEGORIES,
+    )
+
+
+@app.route("/candidates/import", methods=["POST"])
+def import_candidates():
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    cur.execute("""
+        SELECT id, start_date, title, owner, memo
+        FROM events
+        WHERE owner IN ('まき', '二人')
+        ORDER BY start_date ASC
+    """)
+    events = cur.fetchall()
+
+    count = 0
+
+    for event in events:
+        source_key = f"calendar_{event['id']}"
+
+        cur.execute("""
+            INSERT INTO expense_candidates (
+                source_event_id,
+                event_date,
+                title,
+                owner,
+                category,
+                amount,
+                status,
+                memo,
+                source_type,
+                source_key
+            )
+            VALUES (%s, %s, %s, %s, %s, NULL, 'pending', %s, 'calendar', %s)
+            ON CONFLICT DO NOTHING
+        """, (
+            event["id"],
+            event["start_date"],
+            event["title"],
+            event["owner"],
+            guess_category(event["title"]),
+            event.get("memo") or "",
+            source_key,
+        ))
+
+        if cur.rowcount > 0:
+            count += 1
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    flash(f"カレンダー予定を{count}件取り込みました")
+    return redirect(url_for("candidates"))
+
+
+@app.route("/candidates/import_uber", methods=["POST"])
+def import_uber_candidates():
+    try:
+        count = import_uber_messages_to_candidates()
+        flash(f"Uberメールを{count}件取り込みました")
+    except Exception as e:
+        flash(f"Uber取り込みエラー：{e}")
+
+    return redirect(url_for("candidates"))
+
+
+@app.route("/candidates/<int:candidate_id>/confirm", methods=["POST"])
+def confirm_candidate(candidate_id):
+    amount = request.form.get("amount")
+    category = request.form.get("category")
+
+    if not amount:
+        flash("金額を入力してください")
+        return redirect(url_for("candidates"))
+
+    if not category:
+        flash("カテゴリを選択してください")
+        return redirect(url_for("candidates"))
+
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    cur.execute("""
+        SELECT *
+        FROM expense_candidates
+        WHERE id = %s
+    """, (candidate_id,))
+    c = cur.fetchone()
+
+    if not c:
+        flash("対象が見つかりません")
+        cur.close()
+        conn.close()
+        return redirect(url_for("candidates"))
+
+    cur.execute("""
+        INSERT INTO expenses (
+            expense_date,
+            category,
+            amount,
+            memo,
+            owner,
+            source_event_id
+        )
+        VALUES (%s, %s, %s, %s, %s, %s)
+    """, (
+        c["event_date"],
+        category,
+        int(amount),
+        f"取り込み：{c['title']}",
+        c["owner"],
+        c["source_event_id"],
+    ))
+
+    cur.execute("""
+        UPDATE expense_candidates
+        SET amount = %s,
+            category = %s,
+            status = 'confirmed'
+        WHERE id = %s
+    """, (
+        int(amount),
+        category,
+        candidate_id,
+    ))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    flash("家計簿に反映しました")
+    return redirect(url_for("home"))
+
+
+@app.route("/candidates/<int:candidate_id>/delete", methods=["POST"])
+def delete_candidate(candidate_id):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+        DELETE FROM expense_candidates
+        WHERE id = %s
+    """, (candidate_id,))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    flash("取り込み候補を削除しました")
+    return redirect(url_for("candidates"))
+
+
+# ==============================
+# 比較
+# ==============================
+@app.route("/compare")
+def compare():
+    selected_category = request.args.get("category", "コンカフェ")
+    months = get_last_accounting_months(6)
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    category_values = []
+    play_values = []
+
+    for ym in months:
+        start, end = get_period_range(ym)
+
+        cur.execute("""
+            SELECT COALESCE(SUM(amount), 0)
+            FROM expenses
+            WHERE expense_date >= %s
+              AND expense_date < %s
+              AND category = %s
+        """, (start, end, selected_category))
+        category_values.append(cur.fetchone()[0] or 0)
+
+        cur.execute("""
+            SELECT COALESCE(SUM(amount), 0)
+            FROM expenses
+            WHERE expense_date >= %s
+              AND expense_date < %s
+              AND category IN ('コンカフェ', '同伴', '交際費', 'シーシャ')
+        """, (start, end))
+        play_values.append(cur.fetchone()[0] or 0)
+
+    cur.close()
+    conn.close()
+
+    return render_template(
+        "compare.html",
+        active="compare",
+        categories=CATEGORIES,
+        selected_category=selected_category,
+        labels=[m[5:] + "月" for m in months],
+        category_values=[int(v) for v in category_values],
+        play_values=[int(v) for v in play_values],
+    )
+
+
+# ==============================
+# 履歴
+# ==============================
+@app.route("/history")
+def history():
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    cur.execute("""
+        SELECT *
+        FROM expenses
+        ORDER BY expense_date DESC, id DESC
+        LIMIT 200
+    """)
+    rows = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    return render_template(
+        "history.html",
+        active="history",
+        rows=rows,
+    )
+
+
+@app.route("/history/<int:expense_id>/delete", methods=["POST"])
+def delete_expense(expense_id):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+        DELETE FROM expenses
+        WHERE id = %s
+    """, (expense_id,))
+
+    deleted_count = cur.rowcount
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    if deleted_count > 0:
+        flash("削除しました")
+    else:
+        flash("削除対象が見つかりませんでした")
+
+    return redirect(url_for("history"))
+
 
 if __name__ == "__main__":
     app.run(debug=True, host="127.0.0.1", port=5000)
